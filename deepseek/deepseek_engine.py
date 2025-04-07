@@ -16,7 +16,6 @@ from langchain.chains import LLMChain
 from typing import List
 
 # Environment Configuration
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:256"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 # Logger Configuration
@@ -24,11 +23,22 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("deepseek_engine")
 
 # Constants
-MODEL_NAME = "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"
-CACHE_DIR = "/home/ubuntu/deepseek_models"
-MAX_INPUT_TOKENS = 7500
-MAX_NEW_TOKENS = 3000
+MODEL_NAME = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
+CACHE_DIR = "/Users/sridhar/Desktop/fast/deepseek_model"
+MAX_INPUT_TOKENS = 200
+MAX_NEW_TOKENS = 100
 DEFAULT_TEMPERATURE = 0.6
+
+# Detect device
+if torch.backends.mps.is_available():
+    DEVICE = torch.device("mps")
+    TORCH_DTYPE = torch.float32  # MPS does not support float16 well
+elif torch.cuda.is_available():
+    DEVICE = torch.device("cuda")
+    TORCH_DTYPE = torch.float16
+else:
+    DEVICE = torch.device("cpu")
+    TORCH_DTYPE = torch.float32
 
 class StopOnTokens(StoppingCriteria):
     def __init__(self, stop_token_ids: List[int]):
@@ -63,7 +73,6 @@ class DeepSeekLangChain:
 
     def initialize_pipeline(self):
         try:
-            # Initialize tokenizer
             self.tokenizer = AutoTokenizer.from_pretrained(
                 self.cache_dir,
                 trust_remote_code=True,
@@ -74,20 +83,15 @@ class DeepSeekLangChain:
             if self.tokenizer.pad_token is None:
                 self.tokenizer.pad_token = self.tokenizer.eos_token
 
-            # Load model without quantization first to check
             model = AutoModelForCausalLM.from_pretrained(
                 self.cache_dir,
-                device_map="auto",
-                torch_dtype=torch.float16,
-                trust_remote_code=True,
-                low_cpu_mem_usage=True
-            )
+                torch_dtype=TORCH_DTYPE,
+                trust_remote_code=True
+            ).to(DEVICE)
 
-            # Configure stopping criteria
             stop_token_ids = [self.tokenizer.eos_token_id]
             stopping_criteria = StoppingCriteriaList([StopOnTokens(stop_token_ids)])
 
-            # Create transformers pipeline with explicit settings
             text_pipeline = pipeline(
                 "text-generation",
                 model=model,
@@ -99,12 +103,10 @@ class DeepSeekLangChain:
                 repetition_penalty=1.15,
                 stopping_criteria=stopping_criteria,
                 pad_token_id=self.tokenizer.pad_token_id,
-                device_map="auto",
-                batch_size=1,
+                device=0 if DEVICE.type == "cuda" else -1,  # -1 = CPU, 0 = GPU
                 return_full_text=False
             )
 
-            # Wrap in LangChain pipeline using updated import
             self.llm = HuggingFacePipeline(pipeline=text_pipeline)
 
         except Exception as e:
@@ -129,25 +131,22 @@ class DeepSeekLangChain:
             verbose=False
         )
 
-    def generate(self, prompt: str, system_prompt: str = "You are a helpful AI assistant.", 
+    def generate(self, prompt: str, system_prompt: str = "You are a helpful AI assistant.",
                 temperature: float = DEFAULT_TEMPERATURE, max_new_tokens: int = MAX_NEW_TOKENS) -> str:
         try:
             if not prompt.strip():
                 raise ValueError("User prompt is empty.")
-            
+
             logger.info(f"System prompt: {system_prompt}")
             logger.info(f"User prompt: {prompt}")
 
-            # Prepare input with proper formatting
             formatted_input = self.prompt.format(
                 system_prompt=system_prompt,
                 user_prompt=prompt
             )
 
-            # Generate response directly through pipeline
             response = self.llm(formatted_input)
 
-            # Clean response
             if isinstance(response, dict):
                 generated_text = response.get("generated_text", str(response))
             else:
