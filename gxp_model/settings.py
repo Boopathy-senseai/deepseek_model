@@ -31,13 +31,15 @@ ALLOWED_HOSTS = ["*"]
 # Application definition
 
 INSTALLED_APPS = [
+    'daphne',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    'deepseek'
+    'deepseek',
+    'channels'
 ]
 
 MIDDLEWARE = [
@@ -68,9 +70,9 @@ TEMPLATES = [
     },
 ]
 
-WSGI_APPLICATION = 'gxp_model.wsgi.application'
+# WSGI_APPLICATION = 'gxp_model.wsgi.application'
 
-
+ASGI_APPLICATION = 'gxp_model.asgi.application'
 # Database
 # https://docs.djangoproject.com/en/3.2/ref/settings/#databases
 

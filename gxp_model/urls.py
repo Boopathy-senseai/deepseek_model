@@ -15,8 +15,12 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path,include
+from django.urls import re_path
+from chat import consumers
 
 urlpatterns = [
     path('admin/', admin.site.urls),
      path("", include("deepseek.urls")),
+    #  path("", include("chat.routing"))
+     re_path('ws/chat/', consumers.ChatConsumer.as_asgi()),
 ]
