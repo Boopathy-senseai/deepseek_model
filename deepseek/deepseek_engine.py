@@ -1,3 +1,4 @@
+
 import os
 import torch
 import logging
@@ -7,13 +8,16 @@ from transformers import (
     AutoModelForCausalLM,
     pipeline,
     StoppingCriteria,
-    StoppingCriteriaList
+    StoppingCriteriaList,
+    TextIteratorStreamer
 )
 from huggingface_hub import snapshot_download
 from langchain_community.llms import HuggingFacePipeline
 from langchain_core.prompts import PromptTemplate
 from langchain.chains import LLMChain
 from typing import List
+from threading import Thread
+import time
 
 # Environment Configuration
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -29,10 +33,10 @@ MAX_INPUT_TOKENS = 200
 MAX_NEW_TOKENS = 100
 DEFAULT_TEMPERATURE = 0.6
 
-# Detect device
+# Detect Device
 if torch.backends.mps.is_available():
     DEVICE = torch.device("mps")
-    TORCH_DTYPE = torch.float32  # MPS does not support float16 well
+    TORCH_DTYPE = torch.float32
 elif torch.cuda.is_available():
     DEVICE = torch.device("cuda")
     TORCH_DTYPE = torch.float16
@@ -40,6 +44,8 @@ else:
     DEVICE = torch.device("cpu")
     TORCH_DTYPE = torch.float32
 
+
+# Custom Stopping Criteria
 class StopOnTokens(StoppingCriteria):
     def __init__(self, stop_token_ids: List[int]):
         self.stop_token_ids = stop_token_ids
@@ -47,6 +53,8 @@ class StopOnTokens(StoppingCriteria):
     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor, **kwargs) -> bool:
         return any(stop_id in input_ids[0] for stop_id in self.stop_token_ids)
 
+
+# DeepSeek Wrapper Class
 class DeepSeekLangChain:
     def __init__(self):
         self.model_name = MODEL_NAME
@@ -83,31 +91,11 @@ class DeepSeekLangChain:
             if self.tokenizer.pad_token is None:
                 self.tokenizer.pad_token = self.tokenizer.eos_token
 
-            model = AutoModelForCausalLM.from_pretrained(
+            self.model = AutoModelForCausalLM.from_pretrained(
                 self.cache_dir,
                 torch_dtype=TORCH_DTYPE,
                 trust_remote_code=True
             ).to(DEVICE)
-
-            stop_token_ids = [self.tokenizer.eos_token_id]
-            stopping_criteria = StoppingCriteriaList([StopOnTokens(stop_token_ids)])
-
-            text_pipeline = pipeline(
-                "text-generation",
-                model=model,
-                tokenizer=self.tokenizer,
-                max_new_tokens=MAX_NEW_TOKENS,
-                temperature=DEFAULT_TEMPERATURE,
-                top_p=0.9,
-                top_k=40,
-                repetition_penalty=1.15,
-                stopping_criteria=stopping_criteria,
-                pad_token_id=self.tokenizer.pad_token_id,
-                device=0 if DEVICE.type == "cuda" else -1,  # -1 = CPU, 0 = GPU
-                return_full_text=False
-            )
-
-            self.llm = HuggingFacePipeline(pipeline=text_pipeline)
 
         except Exception as e:
             logger.error(f"Pipeline initialization failed: {e}")
@@ -125,14 +113,16 @@ class DeepSeekLangChain:
             input_variables=["system_prompt", "user_prompt"]
         )
 
+        # chain setup for synchronous LLM usage
         self.chain = LLMChain(
-            llm=self.llm,
+            llm=HuggingFacePipeline(pipeline=None),
             prompt=self.prompt,
             verbose=False
         )
 
     def generate(self, prompt: str, system_prompt: str = "You are a helpful AI assistant.",
-                temperature: float = DEFAULT_TEMPERATURE, max_new_tokens: int = MAX_NEW_TOKENS) -> str:
+                 temperature: float = DEFAULT_TEMPERATURE,
+                 max_new_tokens: int = MAX_NEW_TOKENS):
         try:
             if not prompt.strip():
                 raise ValueError("User prompt is empty.")
@@ -140,25 +130,42 @@ class DeepSeekLangChain:
             logger.info(f"System prompt: {system_prompt}")
             logger.info(f"User prompt: {prompt}")
 
+            # Format input with prompt template
             formatted_input = self.prompt.format(
                 system_prompt=system_prompt,
                 user_prompt=prompt
             )
 
-            response = self.llm(formatted_input)
+            # Tokenize input
+            inputs = self.tokenizer(formatted_input, return_tensors="pt", padding=True).to(DEVICE)
 
-            if isinstance(response, dict):
-                generated_text = response.get("generated_text", str(response))
-            else:
-                generated_text = str(response)
+            # Create streamer for live token output
+            streamer = TextIteratorStreamer(self.tokenizer, skip_special_tokens=True)
 
-            cleaned = re.sub(r'\n{2,}', '\n', generated_text)
-            cleaned = re.sub(r'\b(Hmm+|Okay|Alright|Wait)\b[\s,.]*', '', cleaned, flags=re.IGNORECASE)
-            return cleaned.strip()
+            # Start model generation in a separate thread
+            generation_thread = Thread(
+                target=self.model.generate,
+                kwargs={
+                    "input_ids": inputs["input_ids"],
+                    "attention_mask": inputs["attention_mask"],
+                    "max_new_tokens": max_new_tokens,
+                    "temperature": temperature,
+                    "do_sample": True,
+                    "pad_token_id": self.tokenizer.pad_token_id,
+                    "streamer": streamer,
+                }
+            )
+            generation_thread.start()
+
+            # Yield tokens live as they are generated
+            for token in streamer:
+                yield token
 
         except Exception as e:
-            logger.error(f"Generation failed: {e}", exc_info=True)
-            raise
+            logger.error(f"Streaming generation failed: {e}", exc_info=True)
+            yield "[Error] Generation failed."
+
 
 # Global instance
 deepseek_model = DeepSeekLangChain()
+

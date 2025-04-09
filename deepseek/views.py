@@ -3,6 +3,7 @@ import logging
 from django.http import JsonResponse, HttpResponseBadRequest
 from django.views.decorators.csrf import csrf_exempt
 from .deepseek_engine import deepseek_model
+from django.http import StreamingHttpResponse
 
 logger = logging.getLogger("gxp_model")
 
@@ -33,22 +34,20 @@ def generate_text(request):
         temperature = max(0.1, min(1.0, temperature))
         max_tokens = min(3000, max(100, max_tokens))
 
+        print(")))))0",prompt,system_prompt)
         # Generate response
-        result = deepseek_model.generate(
+        generator = deepseek_model.generate(
             prompt=prompt,
             system_prompt=system_prompt
            # temperature=temperature,
            # max_new_tokens=max_tokens
         )
 
-        return JsonResponse({
-            "success": True,
-            "response": result,
-            "parameters": {
-                "temperature": temperature,
-                "max_tokens": max_tokens
-            }
-        })
+        def token_stream():
+            for token in generator:
+                yield token  # or yield token + " " for space between words
+
+        return StreamingHttpResponse(token_stream(), content_type="text/plain")
 
     except json.JSONDecodeError:
         return JsonResponse(
