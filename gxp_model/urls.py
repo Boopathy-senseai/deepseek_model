@@ -22,5 +22,5 @@ urlpatterns = [
     path('admin/', admin.site.urls),
      path("", include("deepseek.urls")),
     #  path("", include("chat.routing"))
-     re_path('ws/chat/', consumers.ChatConsumer.as_asgi()),
+    #  re_path('ws/chat/', consumers.ChatConsumer.as_asgi()),
 ]
