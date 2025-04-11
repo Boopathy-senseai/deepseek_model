@@ -16,19 +16,19 @@ def generate_text(request):
         prompt = data.get("prompt", "").strip()
         system_prompt = data.get("system_prompt", "You are an AI assistant. Provide clear and accurate responses.")
         temperature = float(data.get("temperature", 0.6))
-        max_tokens = int(data.get("max_tokens", 300))
+        max_tokens = int(data.get("max_tokens", 3000))
 
         if not prompt:
             return JsonResponse({"success": False, "error": "Prompt is required"}, status=422)
 
         # Clamp values
         temperature = max(0.1, min(1.0, temperature))
-        max_tokens = min(200, max(100, max_tokens))
-
+        max_tokens = min(3000, max_tokens)
+        
         logger.info(f"Prompt: {prompt}")
         logger.info(f"System prompt: {system_prompt}")
         logger.info(f"Temperature: {temperature}, Max Tokens: {max_tokens}")
-
+        print("!!!!!!!!!!!!!!!!!!",max_tokens)
         # Wrap the generator to ensure each chunk is followed by newline and flushed immediately
         def event_stream():
             try:
