@@ -1,327 +1,177 @@
-# import os
+# from transformers import AutoTokenizer, AutoModelForCausalLM, TextIteratorStreamer
 # import torch
-# import logging
-# from transformers import (
-#     AutoTokenizer,
-#     AutoModelForCausalLM,
-#     TextIteratorStreamer,
-#     TextGenerationPipeline,
-#     StoppingCriteria,
-#     StoppingCriteriaList
-# )
-# from typing import List
+# import threading
+# from sty import fg
 
-# from huggingface_hub import snapshot_download
-# from langchain_community.llms import HuggingFacePipeline
-# from langchain_core.prompts import PromptTemplate
-# from langchain.chains import LLMChain
-# from threading import Thread
+# # Set device
+# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# # Configuration
-# os.environ["TOKENIZERS_PARALLELISM"] = "false"
-# logging.basicConfig(level=logging.INFO)
-# logger = logging.getLogger("deepseek_engine")
+# # Load tokenizer & model
+# tokenizer = AutoTokenizer.from_pretrained("deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B")
+# model = AutoModelForCausalLM.from_pretrained(
+#     "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
+#     torch_dtype=torch.float16,
+#     trust_remote_code=True
+# ).to(device)
+# model.eval()
 
-# MODEL_NAME = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
-# CACHE_DIR = "/Users/sridhar/Desktop/fast/deepseek_model/cache"
-# MAX_INPUT_TOKENS = 7500
-# MAX_NEW_TOKENS = 3000
-# DEFAULT_TEMPERATURE = 0.6
-# class StopOnTokens(StoppingCriteria):
-#     def __init__(self, stop_token_ids: List[int]):
-#         self.stop_token_ids = stop_token_ids
+# class DeepSeekModel:
+#     @staticmethod
+#     def generate(prompt, system_prompt="You are an AI assistant. Provide clear and accurate responses.", 
+#                  temperature=0.7, max_new_tokens=1024):
+#         # ... [previous setup code remains the same] ...
 
-#     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor, **kwargs) -> bool:
-#         return any(stop_id in input_ids[0] for stop_id in self.stop_token_ids)
-
-# from datetime import datetime
-
-# # Detect device
-# if torch.backends.mps.is_available():
-#     DEVICE = torch.device("mps")
-#     TORCH_DTYPE = torch.float32
-# elif torch.cuda.is_available():
-#     DEVICE = torch.device("cuda")
-#     TORCH_DTYPE = torch.float16
-# else:
-#     DEVICE = torch.device("cpu")
-#     TORCH_DTYPE = torch.float32
-
-
-# class DeepSeekLangChain:
-#     def __init__(self):
-#         self.model_name = MODEL_NAME
-#         self.cache_dir = CACHE_DIR
-#         os.makedirs(self.cache_dir, exist_ok=True)
-#         self.download_model()
-#         self.initialize_pipeline()
-#         self.create_chain()
-
-#     def download_model(self):
-#         try:
-#             if not os.path.exists(os.path.join(self.cache_dir, "config.json")):
-#                 logger.info(f"Downloading model: {self.model_name}")
-#                 snapshot_download(
-#                     repo_id=self.model_name,
-#                     local_dir=self.cache_dir,
-#                     ignore_patterns=["*.md", "*.txt"],
-#                     local_dir_use_symlinks=False
-#                 )
-#         except Exception as e:
-#             logger.error(f"Model download failed: {e}")
-#             raise
-
-#     def initialize_pipeline(self):
-#         try:
-#             self.tokenizer = AutoTokenizer.from_pretrained(
-#                 self.cache_dir,
-#                 trust_remote_code=True,
-#                 padding_side="left",
-#                 model_max_length=MAX_INPUT_TOKENS + MAX_NEW_TOKENS
-#             )
-
-#             if self.tokenizer.pad_token is None:
-#                 self.tokenizer.pad_token = self.tokenizer.eos_token
-
-#             self.model = AutoModelForCausalLM.from_pretrained(
-#                 self.cache_dir,
-#                 torch_dtype=TORCH_DTYPE,
-#                 trust_remote_code=True
-#             ).to(DEVICE)
-#             stop_token_ids = [self.tokenizer.eos_token_id]
-#             stopping_criteria = StoppingCriteriaList([StopOnTokens(stop_token_ids)])
-#             self.text_pipeline = TextGenerationPipeline(
-#                 model=self.model,
-#                 tokenizer=self.tokenizer,
-#                 device=0 if DEVICE.type == "cuda" else -1,
-#                 stopping_criteria=stopping_criteria,
-#             )
-
-#         except Exception as e:
-#             logger.error(f"Pipeline initialization failed: {e}")
-#             raise
-
-#     def create_chain(self):
-#         template = """[INST] <<SYS>>
-# {system_prompt}
-# <</SYS>>
-
-# {user_prompt} [/INST]"""
-
-#         self.prompt = PromptTemplate(
-#             template=template,
-#             input_variables=["system_prompt", "user_prompt"]
+#         # Initialize streamer with proper newline handling
+#         system_prompt = "You are an AI assistant. Provide clear and accurate responses."
+#         full_prompt = (
+#             f"<|system|>{system_prompt}<|end|>\n"
+#             f"<|user|>{prompt}<|end|>\n"
+#             "<|assistant|><think>"
+#         )
+#         inputs = tokenizer(full_prompt, return_tensors="pt").to(device)
+#         streamer = TextIteratorStreamer(
+#             tokenizer, 
+#             skip_special_tokens=False,  # Preserve newlines
+#             skip_prompt=True
 #         )
 
-#         self.chain = LLMChain(
-#             llm=HuggingFacePipeline(pipeline=self.text_pipeline),
-#             prompt=self.prompt,
-#             verbose=False
-#         )
+#         # ... [generation kwargs remain the same] ...
+#         generation_kwargs = {
+#             "input_ids": inputs["input_ids"],
+#             "attention_mask": inputs["attention_mask"],
+#             "max_new_tokens": max_new_tokens,
+#             "do_sample": True,
+#             "top_k": 50,
+#             "top_p": 0.95,
+#             "temperature": temperature,
+#             "pad_token_id": tokenizer.eos_token_id,
+#             "streamer": streamer,
+#             "repetition_penalty": 1.15,
+#         }
+#         thread = threading.Thread(target=model.generate, kwargs=generation_kwargs)
+#         thread.start()
+    
+#         buffer = ""
+#         in_think_block = False
 
-#     def generate(self, prompt: str, system_prompt: str = "You are a helpful AI assistant.",
-#                  temperature: float = DEFAULT_TEMPERATURE,
-#                  max_new_tokens: int = MAX_NEW_TOKENS):
-#         try:
-#             print("step 1")
-#             if not prompt.strip():
-#                 raise ValueError("User prompt is empty.")
-#             print("step 2")
-#             formatted_input = self.prompt.format(
-#                 system_prompt=system_prompt,
-#                   user_prompt=prompt
-#                   )
+#         for token in streamer:
+#             buffer += token
 
-#             inputs = self.tokenizer(formatted_input, return_tensors="pt", padding=True).to(DEVICE)
-#             print("step 3")
-#             streamer = TextIteratorStreamer(self.tokenizer, skip_special_tokens=True)
-#             print("step 4",max_new_tokens)
-#             generation_thread = Thread(
-#                 target=self.model.generate,
-#                 kwargs={
-#                     "input_ids": inputs["input_ids"],
-#                     "attention_mask": inputs["attention_mask"],
-#                     "max_new_tokens": max_new_tokens,
-#                     "temperature": temperature,
-#                     "do_sample": True,
-#                     "pad_token_id": self.tokenizer.pad_token_id,
-#                     "streamer": streamer,
-#                 }
-#             )
-#             generation_thread.start()
+#             # Handle think block boundaries
+#             if "<think>" in buffer and not in_think_block:
+#                 prefix, think_content = buffer.split("<think>", 1)
+#                 yield prefix  # Send any content before <think>
+#                 buffer = think_content
+#                 in_think_block = True
 
-#             for token in streamer:
-#                 print(f"django model Yielding token:{datetime.now()}", token)
-#                 yield token
+#             if "</think>" in buffer and in_think_block:
+#                 think_content, postfix = buffer.split("</think>", 1)
 
-#         except Exception as e:
-#             logger.error(f"Streaming generation failed: {e}", exc_info=True)
-#             yield "[Error] Generation failed."
+#                 # Process think content with newlines
+#                 print(think_content)
+#                 yield f"\n{think_content}\n"  # Wrap think content in newlines
+#                 buffer = postfix
+#                 in_think_block = False
 
+#             # Send intermediate content
+#             if not in_think_block and buffer:
+#                 yield buffer.replace('\n', '\n')  # Explicit newline preservation
+#                 buffer = ""
 
+#         # Yield remaining content
+#         if buffer:
+#             yield buffer
 # # Global instance
-# deepseek_model = DeepSeekLangChain() 
-import os
+# deepseek_model = DeepSeekModel()
+
+from transformers import AutoTokenizer, AutoModelForCausalLM, TextIteratorStreamer
 import torch
-import logging
-from datetime import datetime
-from threading import Thread
-from typing import List
+import threading
+from sty import fg
 
-from transformers import (
-    AutoTokenizer,
-    AutoModelForCausalLM,
-    TextIteratorStreamer,
-    StoppingCriteria,
-    StoppingCriteriaList
-)
-from huggingface_hub import snapshot_download
-from transformers import TextGenerationPipeline
-from langchain_community.llms import HuggingFacePipeline
-from langchain_core.prompts import PromptTemplate
-from langchain.chains import LLMChain
+# Set device
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Set environment variables
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
+# Load tokenizer & model
+tokenizer = AutoTokenizer.from_pretrained("deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B")
+model = AutoModelForCausalLM.from_pretrained(
+    "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
+    torch_dtype=torch.float16,
+    trust_remote_code=True
+).to(device)
+model.eval()
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("deepseek_engine")
-
-# Constants
-MODEL_NAME = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
-CACHE_DIR = "/Users/sridhar/Desktop/fast/deepseek_model/cache"  # <-- Change this path
-MAX_INPUT_TOKENS = 7500
-MAX_NEW_TOKENS = 3000
-DEFAULT_TEMPERATURE = 0.6
-
-# Device selection
-if torch.backends.mps.is_available():
-    DEVICE = torch.device("mps")
-    TORCH_DTYPE = torch.float32
-elif torch.cuda.is_available():
-    DEVICE = torch.device("cuda")
-    TORCH_DTYPE = torch.float16
-else:
-    DEVICE = torch.device("cpu")
-    TORCH_DTYPE = torch.float32
-
-# Custom stopping criteria
-class StopOnTokens(StoppingCriteria):
-    def __init__(self, stop_token_ids: List[int]):
-        self.stop_token_ids = stop_token_ids
-
-    def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor, **kwargs) -> bool:
-        return any(stop_id in input_ids[0] for stop_id in self.stop_token_ids)
-
-# DeepSeek streaming wrapper
-class DeepSeekLangChain:
-    def __init__(self):
-        self.model_name = MODEL_NAME
-        self.cache_dir = CACHE_DIR
-        os.makedirs(self.cache_dir, exist_ok=True)
-        self.download_model()
-        self.initialize_pipeline()
-        self.create_chain()
-
-    def download_model(self):
-        try:
-            if not os.path.exists(os.path.join(self.cache_dir, "config.json")):
-                logger.info(f"Downloading model: {self.model_name}")
-                snapshot_download(
-                    repo_id=self.model_name,
-                    local_dir=self.cache_dir,
-                    ignore_patterns=["*.md", "*.txt"],
-                    local_dir_use_symlinks=False
-                )
-        except Exception as e:
-            logger.error(f"Model download failed: {e}")
-            raise
-
-    def initialize_pipeline(self):
-        try:
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                self.cache_dir,
-                trust_remote_code=True,
-                padding_side="left",
-                model_max_length=MAX_INPUT_TOKENS + MAX_NEW_TOKENS
-            )
-
-            if self.tokenizer.pad_token is None:
-                self.tokenizer.pad_token = self.tokenizer.eos_token
-
-            self.model = AutoModelForCausalLM.from_pretrained(
-                self.cache_dir,
-                torch_dtype=TORCH_DTYPE,
-                trust_remote_code=True,
-                
-            ).to(DEVICE)
-
-            stop_token_ids = [self.tokenizer.eos_token_id]
-            self.stopping_criteria = StoppingCriteriaList([StopOnTokens(stop_token_ids)])
-
-        except Exception as e:
-            logger.error(f"Pipeline initialization failed: {e}")
-            raise
-
-    def create_chain(self):
-        template = """[INST] 
-{system_prompt}
-
-{user_prompt} [/INST]"""
-
-        self.prompt = PromptTemplate(
-            template=template,
-            input_variables=["system_prompt", "user_prompt"]
+class DeepSeekModel:
+    @staticmethod
+    def generate(prompt, system_prompt="You are an AI assistant. Provide clear and accurate responses.", 
+                 temperature=0.7, max_new_tokens=1024):
+        # Format the input prompt for the model
+        system_prompt = "You are an AI assistant. Provide clear and accurate responses."
+        full_prompt = (
+            f"<|system|>{system_prompt}<|end|>\n"
+            f"<|user|>{prompt}<|end|>\n"
+            "<|assistant|><think>"
         )
 
-    def generate(self, prompt: str, system_prompt: str = "You are a helpful AI assistant.",
-                 temperature: float = DEFAULT_TEMPERATURE,
-                 max_new_tokens: int = MAX_NEW_TOKENS):
-        try:
-            if not prompt.strip():
-                raise ValueError("User prompt is empty.")
+        # Tokenize and move to device
+        inputs = tokenizer(full_prompt, return_tensors="pt").to(device)
+        streamer = TextIteratorStreamer(tokenizer, skip_special_tokens=True)
 
-            formatted_input = self.prompt.format(
-                system_prompt=system_prompt,
-                user_prompt=prompt
-            )
+        # Generation configuration
+        generation_kwargs = {
+            "input_ids": inputs["input_ids"],
+            "attention_mask": inputs["attention_mask"],
+            "max_new_tokens": max_new_tokens,
+            "do_sample": True,
+            "top_k": 50,
+            "top_p": 0.95,
+            "temperature": temperature,
+            "pad_token_id": tokenizer.eos_token_id,
+            "streamer": streamer,
+            "repetition_penalty": 1.15,
+        }
 
-            inputs = self.tokenizer(
-                formatted_input,
-                return_tensors="pt",
-                padding=True
-            ).to(DEVICE)
+        # Run generation in a separate thread
+        thread = threading.Thread(target=model.generate, kwargs=generation_kwargs)
+        thread.start()
 
-            # Set up streaming
-            streamer = TextIteratorStreamer(self.tokenizer, skip_special_tokens=True)
+        buffer = ""
+        start_printing = False
+        end_think = False
 
-            generation_thread = Thread(
-                target=self.model.generate,
-                kwargs={
-                    "input_ids": inputs["input_ids"],
-                    "attention_mask": inputs["attention_mask"],
-                    "max_new_tokens": max_new_tokens,
-                    "temperature": temperature,
-                    "do_sample": True,
-                    "pad_token_id": self.tokenizer.pad_token_id,
-                    "streamer": streamer,
-                    "stopping_criteria": self.stopping_criteria,
-                    "repetition_penalty": 1.15,
-                    "num_beams":1
-                }
-            )
-            generation_thread.start()
+        for token in streamer:
+            buffer += token
 
-            # Yield each token as it’s generated
-            for token in streamer:
-                print(f"django model Yielding token: {datetime.now()} {token}")
-                yield token
+            # Start streaming after <think>
+            if not start_printing and "<think>" in buffer:
+                start_printing = True
+                buffer = buffer.split("<think>", 1)[1]
 
-        except Exception as e:
-            logger.error(f"Streaming generation failed: {e}", exc_info=True)
-            yield "[Error] Generation failed."
+                yield "<think>"  # Send opening tag
+                print(fg.green + "<think>", flush=True)
 
+                if buffer:
+                    yield buffer
+                    print(buffer, end="", flush=True)
+                buffer = ""
+
+            elif start_printing:
+                # End streaming at </think>
+                if not end_think and "</think>" in buffer:
+                    parts = buffer.split("</think>", 1)
+
+                    yield parts[0]
+                    print(parts[0], end="", flush=True)
+
+                    yield "</think>"
+                    print("</think>", flush=True)
+
+                    buffer = parts[1]
+                    end_think = True
+                else:
+                    yield token
+                    print(token, end="", flush=True)
 
 # Global instance
-deepseek_model = DeepSeekLangChain()
+deepseek_model = DeepSeekModel()
+
