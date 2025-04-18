@@ -49,8 +49,8 @@ def generate_text(request):
                    
                     if len(chunk)>0:
                         yield f"{chunk}\n"
-                    else:
-                        yield "//n" 
+                    #else:
+                    #    yield "//n" 
             except GeneratorExit:
                 logger.warning("Streaming interrupted by client")
             except Exception as e:
