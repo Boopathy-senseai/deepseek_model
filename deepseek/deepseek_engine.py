@@ -264,8 +264,8 @@ class DeepSeekModel:
                     yield parts[0]
                     print(parts[0], end="", flush=True)
  
-                    yield "</think>"
-                    print("</think>", flush=True)
+                    yield "\n</think>\n"
+                    print("\n</think>\n", flush=True)
  
                     buffer = parts[1]
                     end_think = True
