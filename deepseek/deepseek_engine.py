@@ -83,7 +83,7 @@
 #             yield buffer
 # # Global instance
 # deepseek_model = DeepSeekModel()
-
+"""
 from transformers import AutoTokenizer, AutoModelForCausalLM, TextIteratorStreamer
 import torch
 import threading
@@ -173,5 +173,106 @@ class DeepSeekModel:
                     print(token, end="", flush=True)
 
 # Global instance
+deepseek_model = DeepSeekModel()
+"""
+from transformers import AutoTokenizer, AutoModelForCausalLM, TextIteratorStreamer, BitsAndBytesConfig
+import torch
+import threading
+from sty import fg
+ 
+# Set device
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+ 
+# Quantization configuration (4-bit for memory efficiency)
+quantization_config = BitsAndBytesConfig(
+    load_in_4bit=True,
+    bnb_4bit_compute_dtype=torch.float16,
+    bnb_4bit_quant_type="nf4",
+    bnb_4bit_use_double_quant=True,
+)
+ 
+# Load tokenizer & model (Llama 8B instead of DeepSeek)
+model_id = "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"  # Changed to Llama 8B
+tokenizer = AutoTokenizer.from_pretrained(model_id)
+model = AutoModelForCausalLM.from_pretrained(
+    model_id,
+    quantization_config=quantization_config,
+    torch_dtype=torch.float16,
+    trust_remote_code=True,
+    device_map="auto"  # Automatically distributes layers across GPUs
+).to(device)
+model.eval()
+ 
+class DeepSeekModel:
+    @staticmethod
+    def generate(prompt, system_prompt="You are an AI assistant. Provide clear and accurate responses.",
+                 temperature=0.7, max_new_tokens=1024):
+        # Format the input prompt for the model
+        full_prompt = (
+            f"<|system|>{system_prompt}<|end|>\n"
+            f"<|user|>{prompt}<|end|>\n"
+            "<|assistant|><think>"
+        )
+ 
+        # Tokenize and move to device
+        inputs = tokenizer(full_prompt, return_tensors="pt").to(device)
+        streamer = TextIteratorStreamer(tokenizer, skip_special_tokens=True)
+ 
+        # Generation configuration
+        generation_kwargs = {
+            "input_ids": inputs["input_ids"],
+            "attention_mask": inputs["attention_mask"],
+            "max_new_tokens": max_new_tokens,
+            "do_sample": True,
+            "top_k": 50,
+            "top_p": 0.95,
+            "temperature": temperature,
+            "pad_token_id": tokenizer.eos_token_id,
+            "streamer": streamer,
+            "repetition_penalty": 1.15,
+        }
+ 
+        # Run generation in a separate thread
+        thread = threading.Thread(target=model.generate, kwargs=generation_kwargs)
+        thread.start()
+ 
+        buffer = ""
+        start_printing = False
+        end_think = False
+ 
+        for token in streamer:
+            buffer += token
+ 
+            # Start streaming after <think>
+            if not start_printing and "<think>" in buffer:
+                start_printing = True
+                buffer = buffer.split("<think>", 1)[1]
+ 
+                yield "<think>"  # Send opening tag
+                print(fg.green + "<think>", flush=True)
+ 
+                if buffer:
+                    yield buffer
+                    print(buffer, end="", flush=True)
+                buffer = ""
+ 
+            elif start_printing:
+                # End streaming at </think>
+                if not end_think and "</think>" in buffer:
+                    parts = buffer.split("</think>", 1)
+ 
+                    yield parts[0]
+                    print(parts[0], end="", flush=True)
+ 
+                    yield "</think>"
+                    print("</think>", flush=True)
+ 
+                    buffer = parts[1]
+                    end_think = True
+                else:
+                    yield token
+                    print(token, end="", flush=True)
+ 
+# Global instance (kept the same name for compatibility)
 deepseek_model = DeepSeekModel()
 
