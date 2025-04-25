@@ -1,164 +1,278 @@
-import os
+# from transformers import AutoTokenizer, AutoModelForCausalLM, TextIteratorStreamer
+# import torch
+# import threading
+# from sty import fg
+
+# # Set device
+# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# # Load tokenizer & model
+# tokenizer = AutoTokenizer.from_pretrained("deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B")
+# model = AutoModelForCausalLM.from_pretrained(
+#     "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
+#     torch_dtype=torch.float16,
+#     trust_remote_code=True
+# ).to(device)
+# model.eval()
+
+# class DeepSeekModel:
+#     @staticmethod
+#     def generate(prompt, system_prompt="You are an AI assistant. Provide clear and accurate responses.", 
+#                  temperature=0.7, max_new_tokens=1024):
+#         # ... [previous setup code remains the same] ...
+
+#         # Initialize streamer with proper newline handling
+#         system_prompt = "You are an AI assistant. Provide clear and accurate responses."
+#         full_prompt = (
+#             f"<|system|>{system_prompt}<|end|>\n"
+#             f"<|user|>{prompt}<|end|>\n"
+#             "<|assistant|><think>"
+#         )
+#         inputs = tokenizer(full_prompt, return_tensors="pt").to(device)
+#         streamer = TextIteratorStreamer(
+#             tokenizer, 
+#             skip_special_tokens=False,  # Preserve newlines
+#             skip_prompt=True
+#         )
+
+#         # ... [generation kwargs remain the same] ...
+#         generation_kwargs = {
+#             "input_ids": inputs["input_ids"],
+#             "attention_mask": inputs["attention_mask"],
+#             "max_new_tokens": max_new_tokens,
+#             "do_sample": True,
+#             "top_k": 50,
+#             "top_p": 0.95,
+#             "temperature": temperature,
+#             "pad_token_id": tokenizer.eos_token_id,
+#             "streamer": streamer,
+#             "repetition_penalty": 1.15,
+#         }
+#         thread = threading.Thread(target=model.generate, kwargs=generation_kwargs)
+#         thread.start()
+    
+#         buffer = ""
+#         in_think_block = False
+
+#         for token in streamer:
+#             buffer += token
+
+#             # Handle think block boundaries
+#             if "<think>" in buffer and not in_think_block:
+#                 prefix, think_content = buffer.split("<think>", 1)
+#                 yield prefix  # Send any content before <think>
+#                 buffer = think_content
+#                 in_think_block = True
+
+#             if "</think>" in buffer and in_think_block:
+#                 think_content, postfix = buffer.split("</think>", 1)
+
+#                 # Process think content with newlines
+#                 print(think_content)
+#                 yield f"\n{think_content}\n"  # Wrap think content in newlines
+#                 buffer = postfix
+#                 in_think_block = False
+
+#             # Send intermediate content
+#             if not in_think_block and buffer:
+#                 yield buffer.replace('\n', '\n')  # Explicit newline preservation
+#                 buffer = ""
+
+#         # Yield remaining content
+#         if buffer:
+#             yield buffer
+# # Global instance
+# deepseek_model = DeepSeekModel()
+"""
+from transformers import AutoTokenizer, AutoModelForCausalLM, TextIteratorStreamer
 import torch
-import logging
-import re
-from transformers import (
-    AutoTokenizer,
-    AutoModelForCausalLM,
-    pipeline,
-    StoppingCriteria,
-    StoppingCriteriaList
-)
-from huggingface_hub import snapshot_download
-from langchain_community.llms import HuggingFacePipeline
-from langchain_core.prompts import PromptTemplate
-from langchain.chains import LLMChain
-from typing import List
+import threading
+from sty import fg
 
-# Environment Configuration
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
+# Set device
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Logger Configuration
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("deepseek_engine")
+# Load tokenizer & model
+tokenizer = AutoTokenizer.from_pretrained("deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B")
+model = AutoModelForCausalLM.from_pretrained(
+    "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
+    torch_dtype=torch.float16,
+    trust_remote_code=True
+).to(device)
+model.eval()
 
-# Constants
-MODEL_NAME = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
-CACHE_DIR = "/Users/sridhar/Desktop/fast/deepseek_model"
-MAX_INPUT_TOKENS = 200
-MAX_NEW_TOKENS = 100
-DEFAULT_TEMPERATURE = 0.6
-
-# Detect device
-if torch.backends.mps.is_available():
-    DEVICE = torch.device("mps")
-    TORCH_DTYPE = torch.float32  # MPS does not support float16 well
-elif torch.cuda.is_available():
-    DEVICE = torch.device("cuda")
-    TORCH_DTYPE = torch.float16
-else:
-    DEVICE = torch.device("cpu")
-    TORCH_DTYPE = torch.float32
-
-class StopOnTokens(StoppingCriteria):
-    def __init__(self, stop_token_ids: List[int]):
-        self.stop_token_ids = stop_token_ids
-
-    def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor, **kwargs) -> bool:
-        return any(stop_id in input_ids[0] for stop_id in self.stop_token_ids)
-
-class DeepSeekLangChain:
-    def __init__(self):
-        self.model_name = MODEL_NAME
-        self.cache_dir = CACHE_DIR
-        os.makedirs(self.cache_dir, exist_ok=True)
-        self.download_model()
-        self.initialize_pipeline()
-        self.create_chain()
-
-    def download_model(self):
-        try:
-            config_path = os.path.join(self.cache_dir, "config.json")
-            if not os.path.exists(config_path):
-                logger.info(f"Downloading model: {self.model_name}")
-                snapshot_download(
-                    repo_id=self.model_name,
-                    local_dir=self.cache_dir,
-                    ignore_patterns=["*.md", "*.txt"],
-                    local_dir_use_symlinks=False
-                )
-        except Exception as e:
-            logger.error(f"Model download failed: {e}")
-            raise
-
-    def initialize_pipeline(self):
-        try:
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                self.cache_dir,
-                trust_remote_code=True,
-                padding_side="left",
-                model_max_length=MAX_INPUT_TOKENS + MAX_NEW_TOKENS
-            )
-
-            if self.tokenizer.pad_token is None:
-                self.tokenizer.pad_token = self.tokenizer.eos_token
-
-            model = AutoModelForCausalLM.from_pretrained(
-                self.cache_dir,
-                torch_dtype=TORCH_DTYPE,
-                trust_remote_code=True
-            ).to(DEVICE)
-
-            stop_token_ids = [self.tokenizer.eos_token_id]
-            stopping_criteria = StoppingCriteriaList([StopOnTokens(stop_token_ids)])
-
-            text_pipeline = pipeline(
-                "text-generation",
-                model=model,
-                tokenizer=self.tokenizer,
-                max_new_tokens=MAX_NEW_TOKENS,
-                temperature=DEFAULT_TEMPERATURE,
-                top_p=0.9,
-                top_k=40,
-                repetition_penalty=1.15,
-                stopping_criteria=stopping_criteria,
-                pad_token_id=self.tokenizer.pad_token_id,
-                device=0 if DEVICE.type == "cuda" else -1,  # -1 = CPU, 0 = GPU
-                return_full_text=False
-            )
-
-            self.llm = HuggingFacePipeline(pipeline=text_pipeline)
-
-        except Exception as e:
-            logger.error(f"Pipeline initialization failed: {e}")
-            raise
-
-    def create_chain(self):
-        template = """[INST] <<SYS>>
-{system_prompt}
-<</SYS>>
-
-{user_prompt} [/INST]"""
-
-        self.prompt = PromptTemplate(
-            template=template,
-            input_variables=["system_prompt", "user_prompt"]
+class DeepSeekModel:
+    @staticmethod
+    def generate(prompt, system_prompt="You are an AI assistant. Provide clear and accurate responses.", 
+                 temperature=0.7, max_new_tokens=1024):
+        # Format the input prompt for the model
+        system_prompt = "You are an AI assistant. Provide clear and accurate responses."
+        full_prompt = (
+            f"<|system|>{system_prompt}<|end|>\n"
+            f"<|user|>{prompt}<|end|>\n"
+            "<|assistant|><think>"
         )
 
-        self.chain = LLMChain(
-            llm=self.llm,
-            prompt=self.prompt,
-            verbose=False
-        )
+        # Tokenize and move to device
+        inputs = tokenizer(full_prompt, return_tensors="pt").to(device)
+        streamer = TextIteratorStreamer(tokenizer, skip_special_tokens=True)
 
-    def generate(self, prompt: str, system_prompt: str = "You are a helpful AI assistant.",
-                temperature: float = DEFAULT_TEMPERATURE, max_new_tokens: int = MAX_NEW_TOKENS) -> str:
-        try:
-            if not prompt.strip():
-                raise ValueError("User prompt is empty.")
+        # Generation configuration
+        generation_kwargs = {
+            "input_ids": inputs["input_ids"],
+            "attention_mask": inputs["attention_mask"],
+            "max_new_tokens": max_new_tokens,
+            "do_sample": True,
+            "top_k": 50,
+            "top_p": 0.95,
+            "temperature": temperature,
+            "pad_token_id": tokenizer.eos_token_id,
+            "streamer": streamer,
+            "repetition_penalty": 1.15,
+        }
 
-            logger.info(f"System prompt: {system_prompt}")
-            logger.info(f"User prompt: {prompt}")
+        # Run generation in a separate thread
+        thread = threading.Thread(target=model.generate, kwargs=generation_kwargs)
+        thread.start()
 
-            formatted_input = self.prompt.format(
-                system_prompt=system_prompt,
-                user_prompt=prompt
-            )
+        buffer = ""
+        start_printing = False
+        end_think = False
 
-            response = self.llm(formatted_input)
+        for token in streamer:
+            buffer += token
 
-            if isinstance(response, dict):
-                generated_text = response.get("generated_text", str(response))
-            else:
-                generated_text = str(response)
+            # Start streaming after <think>
+            if not start_printing and "<think>" in buffer:
+                start_printing = True
+                buffer = buffer.split("<think>", 1)[1]
 
-            cleaned = re.sub(r'\n{2,}', '\n', generated_text)
-            cleaned = re.sub(r'\b(Hmm+|Okay|Alright|Wait)\b[\s,.]*', '', cleaned, flags=re.IGNORECASE)
-            return cleaned.strip()
+                yield "<think>"  # Send opening tag
+                print(fg.green + "<think>", flush=True)
 
-        except Exception as e:
-            logger.error(f"Generation failed: {e}", exc_info=True)
-            raise
+                if buffer:
+                    yield buffer
+                    print(buffer, end="", flush=True)
+                buffer = ""
+
+            elif start_printing:
+                # End streaming at </think>
+                if not end_think and "</think>" in buffer:
+                    parts = buffer.split("</think>", 1)
+
+                    yield parts[0]
+                    print(parts[0], end="", flush=True)
+
+                    yield "</think>"
+                    print("</think>", flush=True)
+
+                    buffer = parts[1]
+                    end_think = True
+                else:
+                    yield token
+                    print(token, end="", flush=True)
 
 # Global instance
-deepseek_model = DeepSeekLangChain()
+deepseek_model = DeepSeekModel()
+"""
+from transformers import AutoTokenizer, AutoModelForCausalLM, TextIteratorStreamer, BitsAndBytesConfig
+import torch
+import threading
+from sty import fg
+ 
+# Set device
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+ 
+# Quantization configuration (4-bit for memory efficiency)
+quantization_config = BitsAndBytesConfig(
+    load_in_4bit=True,
+    bnb_4bit_compute_dtype=torch.float16,
+    bnb_4bit_quant_type="nf4",
+    bnb_4bit_use_double_quant=True,
+)
+ 
+# Load tokenizer & model (Llama 8B instead of DeepSeek)
+model_id = "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"  # Changed to Llama 8B
+tokenizer = AutoTokenizer.from_pretrained(model_id)
+model = AutoModelForCausalLM.from_pretrained(
+    model_id,
+    quantization_config=quantization_config,
+    torch_dtype=torch.float16,
+    trust_remote_code=True,
+    device_map="auto"  # Automatically distributes layers across GPUs
+).to(device)
+model.eval()
+ 
+class DeepSeekModel:
+    @staticmethod
+    def generate(prompt, system_prompt="You are an AI assistant. Provide clear and accurate responses.",
+                 temperature=0.7, max_new_tokens=1024):
+        # Format the input prompt for the model
+        full_prompt = (
+            f"<|system|>{system_prompt}<|end|>\n"
+            f"<|user|>{prompt}<|end|>\n"
+            "<|assistant|><think>"
+        )
+ 
+        # Tokenize and move to device
+        inputs = tokenizer(full_prompt, return_tensors="pt").to(device)
+        streamer = TextIteratorStreamer(tokenizer, skip_special_tokens=True)
+ 
+        # Generation configuration
+        generation_kwargs = {
+            "input_ids": inputs["input_ids"],
+            "attention_mask": inputs["attention_mask"],
+            "max_new_tokens": max_new_tokens,
+            "do_sample": True,
+            "top_k": 50,
+            "top_p": 0.95,
+            "temperature": temperature,
+            "pad_token_id": tokenizer.eos_token_id,
+            "streamer": streamer,
+            "repetition_penalty": 1.15,
+        }
+ 
+        # Run generation in a separate thread
+        thread = threading.Thread(target=model.generate, kwargs=generation_kwargs)
+        thread.start()
+ 
+        buffer = ""
+        start_printing = False
+        end_think = False
+ 
+        for token in streamer:
+            buffer += token
+ 
+            # Start streaming after <think>
+            if not start_printing and "<think>" in buffer:
+                start_printing = True
+                buffer = buffer.split("<think>", 1)[1]
+ 
+                yield "<think>"  # Send opening tag
+                print(fg.green + "<think>", flush=True)
+ 
+                if buffer:
+                    yield buffer
+                    print(buffer, end="", flush=True)
+                buffer = ""
+ 
+            elif start_printing:
+                # End streaming at </think>
+                if not end_think and "</think>" in buffer:
+                    parts = buffer.split("</think>", 1)
+ 
+                    yield parts[0]
+                    print(parts[0], end="", flush=True)
+ 
+                    yield "\n</think>\n"
+                    print("\n</think>\n", flush=True)
+ 
+                    buffer = parts[1]
+                    end_think = True
+                else:
+                    yield token
+                    print(token, end="", flush=True)
+ 
+# Global instance (kept the same name for compatibility)
+deepseek_model = DeepSeekModel()
+
